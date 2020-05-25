@@ -14,6 +14,7 @@ import org.junit.Test;
 import org.testcontainers.utility.DockerImageName;
 
 import static org.hamcrest.CoreMatchers.endsWith;
+import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThat;
@@ -93,6 +94,22 @@ public class MongoDBContainerTest {
             mongoDBContainer.start();
             final String databaseName = "my-db";
             assertThat(mongoDBContainer.getReplicaSetUrl(databaseName), endsWith(databaseName));
+        }
+    }
+
+    @Test
+    public void shouldAuthenticateClient() {
+        try (
+            final MongoDBContainer mongoDBContainer = new MongoDBContainer(DockerImageName.parse("mongo:4.2.7"))
+                .withAuthEnabled();
+        ) {
+            mongoDBContainer.start();
+
+            final String mongoRsUrl = mongoDBContainer.getReplicaSetUrl();
+
+            try (MongoClient mongoSyncClient = MongoClients.create(mongoRsUrl)) {
+                assertThat(mongoSyncClient.getDatabase("admin"), notNullValue());
+            }
         }
     }
 }

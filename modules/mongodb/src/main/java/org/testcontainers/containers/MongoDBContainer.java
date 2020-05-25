@@ -8,6 +8,9 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
+import java.util.concurrent.TimeUnit;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Constructs a single node MongoDB replica set for testing transactions.
@@ -23,6 +26,10 @@ public class MongoDBContainer extends GenericContainer<MongoDBContainer> {
     private static final int MONGODB_INTERNAL_PORT = 27017;
     private static final int AWAIT_INIT_REPLICA_SET_ATTEMPTS = 60;
     private static final String MONGODB_DATABASE_NAME_DEFAULT = "test";
+
+    private boolean authEnabled;
+    private String rootUsername = "root";
+    private String rootPassword = "password";
 
     /**
      * @deprecated use {@link MongoDBContainer(DockerImageName)} instead
@@ -48,6 +55,38 @@ public class MongoDBContainer extends GenericContainer<MongoDBContainer> {
         );
     }
 
+    @Override
+    protected void configure() {
+        if (authEnabled) {
+            addEnv("MONGO_INITDB_ROOT_USERNAME", rootUsername);
+            addEnv("MONGO_INITDB_ROOT_PASSWORD", rootPassword);
+        }
+    }
+
+    /**
+     * Enables authentication.
+     *
+     * @return this
+     */
+    public MongoDBContainer withAuthEnabled() {
+        this.authEnabled = true;
+        return this;
+    }
+
+    /**
+     * Set custom credentials for the root user.
+     *
+     * @param rootUsername the root username to use.
+     * @param rootPassword the password for the root user.
+     * @return this
+     */
+    public MongoDBContainer withRootCredentials(final String rootUsername, final String rootPassword) {
+        this.rootUsername = requireNonNull(rootUsername, "The username must not be null");
+        this.rootPassword = requireNonNull(rootPassword, "The password must not be null");
+        this.authEnabled = true;
+        return this;
+    }
+
     /**
      * Gets a replica set url for the default {@value #MONGODB_DATABASE_NAME_DEFAULT} database.
      *
@@ -67,6 +106,16 @@ public class MongoDBContainer extends GenericContainer<MongoDBContainer> {
         if (!isRunning()) {
             throw new IllegalStateException("MongoDBContainer should be started first");
         }
+        if (authEnabled) {
+            return String.format(
+                "mongodb://%s:%s@%s:%d/%s",
+                rootUsername,
+                rootPassword,
+                getContainerIpAddress(),
+                getMappedPort(MONGODB_INTERNAL_PORT),
+                databaseName
+            );
+        }
         return String.format(
             "mongodb://%s:%d/%s",
             getContainerIpAddress(),
@@ -75,12 +124,24 @@ public class MongoDBContainer extends GenericContainer<MongoDBContainer> {
         );
     }
 
+    public String getRootUsername() {
+        return rootUsername;
+    }
+
+    public String getRootPassword() {
+        return rootPassword;
+    }
+
     @Override
     protected void containerIsStarted(InspectContainerResponse containerInfo) {
         initReplicaSet();
     }
 
     private String[] buildMongoEvalCommand(final String command) {
+        if (authEnabled) {
+            return new String[]{"mongo", "-u", rootUsername, "-p", rootPassword, "--authenticationDatabase", "admin",
+                "--eval", command};
+        }
         return new String[]{"mongo", "--eval", command};
     }
 
@@ -123,9 +184,20 @@ public class MongoDBContainer extends GenericContainer<MongoDBContainer> {
     @SneakyThrows(value = {IOException.class, InterruptedException.class})
     private void initReplicaSet() {
         log.debug("Initializing a single node node replica set...");
-        final ExecResult execResultInitRs = execInContainer(
+        ExecResult execResultInitRs = execInContainer(
             buildMongoEvalCommand("rs.initiate();")
         );
+
+        int attempt = 0;
+        int maxAttempts = 60;
+        while (execResultInitRs.getExitCode() != CONTAINER_EXIT_CODE_OK && attempt <= maxAttempts) {
+            execResultInitRs = execInContainer(
+                buildMongoEvalCommand("rs.initiate();")
+            );
+            attempt++;
+            TimeUnit.MILLISECONDS.sleep(100);
+        }
+
         log.debug(execResultInitRs.getStdout());
         checkMongoNodeExitCode(execResultInitRs);
 
